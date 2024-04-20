@@ -1,0 +1,331 @@
+!pgf90 -fast -o higgsboson higgsboson.cuf
+module hbroutines
+  integer, parameter :: prec = kind(1.d0) ! double kind(1.d0) single kind(1.0) http://fortranwiki.org/fortran/show/Real+precision
+  integer, parameter :: N=501, Nt_max=15000, Nt_freq=100, E_freq=100000, prog_check=0, N_spikes=1
+  real(prec), parameter :: L=5.d0, dt=1.d-4, mu_2=9.d0, lambda=2.d0, cdwdt=-5.d0, dx=1.d0/dble(N-1), &
+       three=3.d0, one=1.d0, two=2.d0, onetwelve=1.d0/12.d0, fourthird=4.d0/3.d0, fifteenhalf=7.5d0, &
+       dtsixth=dt/6.d0, zero=0.d0
+  real(prec), dimension(N_spikes), parameter ::  amps=(/1.d0/), cx=(/5.d-1/), cy=(/5.d-1/), cz=(/5.d-1/), &
+       radius2s=(/ 9.d-2/)
+  real(prec), texture, pointer :: w_tex(:,:,:), wt_tex(:,:,:)
+  real(prec), texture, pointer :: gradw_tex(:,:,:), k11_tex(:,:,:),k12_tex(:,:,:),k21_tex(:,:,:),&
+       k22_tex(:,:,:),k31_tex(:,:,:),k32_tex(:,:,:),k41_tex(:,:,:),k42_tex(:,:,:)
+contains
+  attributes(global) subroutine initial_data1(amps,cx,cy,cz,radius2)  
+    implicit none
+    real(prec), value :: amps, cx, cy, cz, radius2
+    real(prec) :: xyz
+    integer ::  i, j,k
+    i = (blockIdx%x-1)*blockDim%x + threadIdx%x
+    j = (blockIdx%y-1)*blockDim%y + threadIdx%y
+    k = (blockIdx%z-1)*blockDim%z + threadIdx%z
+    if((i>2).and.(i<(N-2)).and.(j>2).and.(j<(N-2)).and.(k>2).and.(k<(N-2))) then
+       xyz=radius2-(i*dx-cx)**two-(j*dx-cy)**two-(k*dx-cz)**two
+       if( xyz>zero) w_tex(i,j,k) = w_tex(i,j,k) + amps*exp(one/radius2-one/xyz)
+    end if
+  end subroutine initial_data1
+
+  attributes(global) subroutine initial_data2() 
+    use cudafor
+    implicit none
+    integer ::  i, j,k
+    i = (blockIdx%x-1)*blockDim%x + threadIdx%x
+    j = (blockIdx%y-1)*blockDim%y + threadIdx%y
+    k = (blockIdx%z-1)*blockDim%z + threadIdx%z
+    if((i>2).and.(i<(N-2)).and.(j>2).and.(j<(N-2)).and.(k>2).and.(k<(N-2))) then
+        wt_tex(i,j,k) = cdwdt*w_tex(i,j,k)
+    end if
+  end subroutine initial_data2
+
+  attributes(host) subroutine save_solution(file_num) !,w)
+    implicit none
+    integer, value :: file_num
+    real(prec), dimension(N,N,N) :: wout
+    integer :: i,j,k
+    CHARACTER*60 FNAME
+    character :: lf*1
+    CHARACTER(len=3)::number
+    CHARACTER(len=5)::Nnumber
+    CHARACTER(len=11)::NNNnumber
+    WRITE(number, '(I3.3)') file_num
+    wout=w_tex
+
+    ! outputformat 1-vtk 2-plot3d 3-both
+!    if(outputformat>1) then
+!       !    plot3d function file format
+!       FNAME="out"//number//".q"
+!       OPEN (UNIT=12,FILE=FNAME,STATUS="UNKNOWN",FORM="UNFORMATTED")
+!       WRITE (12) N, N, N, 1  ! last one is number of variables
+!       WRITE(12) (((wout(i,j,k),i=1,N),j=1,N),k=1,N)
+!       CLOSE(12)
+!    end if
+    
+    ! outputformat 1-vtk 2-plot3d 3-both
+!    if((outputformat==1).or.(outputformat==3)) then
+       ! vtk structured points format
+       WRITE(Nnumber, '(I5)') N
+       WRITE(NNNnumber, '(I11)') N*N*N
+       lf = achar(10) ! line feed character
+       FNAME="out"//number//".vtk"
+       open(unit=12,file=FNAME,access='stream',status='replace',convert='BIG_ENDIAN')
+       write(12) "# vtk DataFile Version 2.0"//lf
+       write(12) "vtk structured points output"//lf
+       write(12) 'BINARY'//lf
+       write(12) 'DATASET STRUCTURED_POINTS'//lf
+       write(12) 'DIMENSIONS '//Nnumber//Nnumber//Nnumber//lf
+       write(12) 'ORIGIN 0 0 0'//lf
+       write(12) 'SPACING 1 1 1'//lf
+       write(12) 'POINT_DATA '//NNNnumber//lf
+       write(12) 'SCALARS higgs float 1'//lf
+       write(12) 'LOOKUP_TABLE default'//lf
+       write(12) (((real(wout(i,j,k)),i=1,N),j=1,N),k=1,N),lf
+       close(12)
+!    end if
+  end subroutine save_solution
+
+  attributes(global) subroutine calc_norm() !(gradw) !, w)
+    use cudafor
+    implicit none
+    integer :: i,j,k
+    i = (blockIdx%x-1)*blockDim%x + threadIdx%x
+    j = (blockIdx%y-1)*blockDim%y + threadIdx%y
+    k = (blockIdx%z-1)*blockDim%z + threadIdx%z
+    if((i>2).and.(i<(N-2)).and.(j>2).and.(j<(N-2)).and.(k>2).and.(k<(N-2))) then
+!gradient
+!       gradw(i,j,k)=(w(i-2,j,k)-8.0*w(i-1,j,k)+8.0*w(i+1,j,k)-w(i+2,j,k))**2.0+(w(i,j-2,k)-8.0*w(i,j-1,k)+8.0*w(i,j+1,k)-w(i,j+2,k))**2.0+(w(i,j,k-2)-8.0*w(i,j,k-1)+8.0*w(i,j,k+1)-w(i,j,k+2))**2.0
+!Laplacian
+       gradw_tex(i,j,k) = abs(fourthird*(w_tex(i-1,j,k)+w_tex(i+1,j,k)+w_tex(i,j-1,k)+w_tex(i,j+1,k)+w_tex(i,j,k-1)+w_tex(i,j,k+1)) & 
+            -fifteenhalf*w_tex(i,j,k) &
+            -onetwelve*(w_tex(i-2,j,k)+w_tex(i+2,j,k)+w_tex(i,j-2,k)+w_tex(i,j+2,k)+w_tex(i,j,k-2)+w_tex(i,j,k+2)))
+    end if
+  end subroutine calc_norm
+
+  attributes(host)   subroutine progress_percentage(step,perc_done)
+    integer:: step,perc_done
+    if( 100*step/Nt_max >= perc_done+10) then
+       perc_done=100*step/Nt_Max
+       write(*,"(I4,A1)") perc_done,"%"
+!       write(*,"(I4,A1)",advance="no") perc_done,"%"
+    end if
+    if(perc_done==100)  write(*,*)
+  end subroutine progress_percentage
+
+  attributes(global) subroutine rungekutta1(t,rt,c1,c2,c3,dtp2)
+    use cudafor
+    implicit none
+    real(prec), value :: t, rt, c1, c2, c3, dtp2
+    integer :: i,j,k
+    i = (blockIdx%x-1)*blockDim%x + threadIdx%x
+    j = (blockIdx%y-1)*blockDim%y + threadIdx%y
+    k = (blockIdx%z-1)*blockDim%z + threadIdx%z
+    ! k1=f(t,y(t))  k2=f(t+h/2,y(t)+k1*h/2) k3=f(t+h/2,y(t)+k2*h/2) k4=f(t+h,y(t)+k3*h) 
+    if((i>2).and.(i<(N-2)).and.(j>2).and.(j<(N-2)).and.(k>2).and.(k<(N-2))) then
+       k11_tex(i,j,k)=wt_tex(i,j,k)
+       k12_tex(i,j,k)=c1*w_tex(i,j,k) -lambda*((w_tex(i,j,k))**three) - three*wt_tex(i,j,k) &
+            + c2*(w_tex(i+2,j,k)+w_tex(i-2,j,k)+w_tex(i,j+2,k)+w_tex(i,j-2,k)+w_tex(i,j,k+2)+w_tex(i,j,k-2))&
+            + c3*(w_tex(i+1,j,k)+w_tex(i-1,j,k)+w_tex(i,j+1,k)+w_tex(i,j-1,k)+w_tex(i,j,k+1)+w_tex(i,j,k-1))
+    end if
+  end subroutine rungekutta1
+
+  attributes(global) subroutine rungekutta2(t,rt,c1,c2,c3,dtp2)
+    use cudafor
+    implicit none
+    real(prec), value :: t, rt, c1, c2, c3, dtp2
+    integer :: i,j,k
+    i = (blockIdx%x-1)*blockDim%x + threadIdx%x
+    j = (blockIdx%y-1)*blockDim%y + threadIdx%y
+    k = (blockIdx%z-1)*blockDim%z + threadIdx%z
+    ! k1=f(t,y(t))  k2=f(t+h/2,y(t)+k1*h/2) k3=f(t+h/2,y(t)+k2*h/2) k4=f(t+h,y(t)+k3*h) 
+    if((i>2).and.(i<(N-2)).and.(j>2).and.(j<(N-2)).and.(k>2).and.(k<(N-2))) then
+       k21_tex(i,j,k)=wt_tex(i,j,k)+dtp2*k12_tex(i,j,k)
+       k22_tex(i,j,k)=c1*(w_tex(i,j,k)+dtp2*k11_tex(i,j,k)) &
+            -lambda*((w_tex(i,j,k)+dtp2*k11_tex(i,j,k))**three)  &
+            - three*(wt_tex(i,j,k)+dtp2*k12_tex(i,j,k)) &
+            + c2*(w_tex(i+2,j,k)+w_tex(i-2,j,k)+w_tex(i,j+2,k)+w_tex(i,j-2,k)+w_tex(i,j,k+2)+w_tex(i,j,k-2))&
+            + c2*dtp2*(k11_tex(i+2,j,k)+k11_tex(i-2,j,k)+k11_tex(i,j+2,k)+k11_tex(i,j-2,k)+k11_tex(i,j,k+2)+k11_tex(i,j,k-2)) &
+            + c3*(w_tex(i+1,j,k)+w_tex(i-1,j,k)+w_tex(i,j+1,k)+w_tex(i,j-1,k)+w_tex(i,j,k+1)+w_tex(i,j,k-1))&
+            + c3*dtp2*(k11_tex(i+1,j,k)+k11_tex(i-1,j,k)+k11_tex(i,j+1,k)+k11_tex(i,j-1,k)+k11_tex(i,j,k+1)+k11_tex(i,j,k-1))
+    end if
+  end subroutine rungekutta2
+
+  attributes(global) subroutine rungekutta3(t,rt,c1,c2,c3,dtp2)
+    use cudafor
+    implicit none
+    real(prec), value :: t, rt, c1, c2, c3, dtp2
+    integer :: i,j,k
+    i = (blockIdx%x-1)*blockDim%x + threadIdx%x
+    j = (blockIdx%y-1)*blockDim%y + threadIdx%y
+    k = (blockIdx%z-1)*blockDim%z + threadIdx%z
+    ! k1=f(t,y(t))  k2=f(t+h/2,y(t)+k1*h/2) k3=f(t+h/2,y(t)+k2*h/2) k4=f(t+h,y(t)+k3*h) 
+    if((i>2).and.(i<(N-2)).and.(j>2).and.(j<(N-2)).and.(k>2).and.(k<(N-2))) then
+       k31_tex(i,j,k)=wt_tex(i,j,k)+dtp2*k22_tex(i,j,k)
+       k32_tex(i,j,k)=c1*(w_tex(i,j,k)+dtp2*k21_tex(i,j,k)) &
+            -lambda*((w_tex(i,j,k)+dtp2*k21_tex(i,j,k))**three)  &
+            - three*(wt_tex(i,j,k)+dtp2*k22_tex(i,j,k)) &
+            + c2*(w_tex(i+2,j,k)+w_tex(i-2,j,k)+w_tex(i,j+2,k)+w_tex(i,j-2,k)+w_tex(i,j,k+2)+w_tex(i,j,k-2))&
+            + c2*dtp2*(k21_tex(i+2,j,k)+k21_tex(i-2,j,k)+k21_tex(i,j+2,k)+k21_tex(i,j-2,k)+k21_tex(i,j,k+2)+k21_tex(i,j,k-2)) &
+            + c3*(w_tex(i+1,j,k)+w_tex(i-1,j,k)+w_tex(i,j+1,k)+w_tex(i,j-1,k)+w_tex(i,j,k+1)+w_tex(i,j,k-1))&
+            + c3*dtp2*(k21_tex(i+1,j,k)+k21_tex(i-1,j,k)+k21_tex(i,j+1,k)+k21_tex(i,j-1,k)+k21_tex(i,j,k+1)+k21_tex(i,j,k-1))
+    end if
+  end subroutine rungekutta3
+
+  attributes(global) subroutine rungekutta4(t,rt,c1,c2,c3,dtp2)
+    use cudafor
+    implicit none
+    real(prec), value :: t, rt, c1, c2, c3, dtp2
+    integer :: i,j,k
+    i = (blockIdx%x-1)*blockDim%x + threadIdx%x
+    j = (blockIdx%y-1)*blockDim%y + threadIdx%y
+    k = (blockIdx%z-1)*blockDim%z + threadIdx%z
+    ! k1=f(t,y(t))  k2=f(t+h/2,y(t)+k1*h/2) k3=f(t+h/2,y(t)+k2*h/2) k4=f(t+h,y(t)+k3*h) 
+    if((i>2).and.(i<(N-2)).and.(j>2).and.(j<(N-2)).and.(k>2).and.(k<(N-2))) then
+       k41_tex(i,j,k)=wt_tex(i,j,k)+dtp2*k32_tex(i,j,k)
+       k42_tex(i,j,k)=c1*(w_tex(i,j,k)+dtp2*k31_tex(i,j,k)) &
+            -lambda*((w_tex(i,j,k)+dtp2*k31_tex(i,j,k))**three)  &
+            - three*(wt_tex(i,j,k)+dtp2*k32_tex(i,j,k)) &
+            + c2*(w_tex(i+2,j,k)+w_tex(i-2,j,k)+w_tex(i,j+2,k)+w_tex(i,j-2,k)+w_tex(i,j,k+2)+w_tex(i,j,k-2))&
+            + c2*dtp2*(k31_tex(i+2,j,k)+k31_tex(i-2,j,k)+k31_tex(i,j+2,k)+k31_tex(i,j-2,k)+k31_tex(i,j,k+2)+k31_tex(i,j,k-2)) &
+            + c3*(w_tex(i+1,j,k)+w_tex(i-1,j,k)+w_tex(i,j+1,k)+w_tex(i,j-1,k)+w_tex(i,j,k+1)+w_tex(i,j,k-1))&
+               + c3*dtp2*(k31_tex(i+1,j,k)+k31_tex(i-1,j,k)+k31_tex(i,j+1,k)+k31_tex(i,j-1,k)+k31_tex(i,j,k+1)+k31_tex(i,j,k-1))
+    end if
+  end subroutine rungekutta4
+
+  attributes(global) subroutine advance_rungekutta()
+    use cudafor
+    implicit none
+    integer :: i,j,k
+    i = (blockIdx%x-1)*blockDim%x + threadIdx%x
+    j = (blockIdx%y-1)*blockDim%y + threadIdx%y
+    k = (blockIdx%z-1)*blockDim%z + threadIdx%z
+    !  y(t+h) = y(t)+(k1+2*k2+2*k3+k4)*h/6
+    if((i>2).and.(i<N-2).and.(j>2).and.(j<N-2).and.(k>2).and.(k<N-2)) then
+       w_tex(i,j,k)=w_tex(i,j,k)+(k11_tex(i,j,k)+two*(k21_tex(i,j,k)+k31_tex(i,j,k))+k41_tex(i,j,k))*dtsixth
+       wt_tex(i,j,k)=wt_tex(i,j,k)+(k12_tex(i,j,k)+two*(k22_tex(i,j,k)+k32_tex(i,j,k))+k42_tex(i,j,k))*dtsixth
+    end if
+  end subroutine advance_rungekutta
+
+  attributes(host)  subroutine save_norm(En)
+    implicit none
+    integer ::  i
+    real(prec), dimension(Nt_max/E_freq+1) :: En
+    OPEN (UNIT=7,FILE="energy.m",action="write",status="replace")
+    WRITE (7,*) "t_norm=[" 
+    do i=0,(Nt_max/E_freq)
+       WRITE(7,*) i*dt*E_freq, En(i+1) 
+    end do
+    WRITE (7,*) "];" 
+    WRITE (7,*) "plot(t_norm(:,1),t_norm(:,2));"
+    close(7)
+  end subroutine save_norm
+
+end module hbroutines
+
+program higgsboson
+  use cudafor
+  use hbroutines
+  implicit none
+  real(prec), managed, dimension(N,N,N), target :: w, wt
+  real(prec), managed, dimension(N,N,N), target :: gradw, k11,k12,k21,k22,k31,k32,k41,k42
+  real(prec), dimension(Nt_max/E_freq+1) :: En
+  integer :: istat, m, step, perc_done=0, te
+  real(prec) :: t, rt, c1, c2, c3, dtp2
+  type(dim3) :: blocks, threads
+
+! 100 timesteps
+!  threads = dim3(8,8,8) !time  26
+!  threads = dim3(16,8,8) !time 26
+!  threads = dim3(16,16,4) !time 26
+!  threads = dim3(32,16,2) !time 24
+!  threads = dim3(32,32,1) !time 26
+!  threads = dim3(64,16,1) !time 25
+!  threads = dim3(128,8,1) !time 25
+!  threads = dim3(512,2,1) !time 25
+!  threads = dim3(512,2,2) !time bad
+!  threads = dim3(512,1,1) !time 23
+!  threads = dim3(256,4,2) !time 23
+!  threads = dim3(256,2,2) !time 23
+!  threads = dim3(256,2,1) !time 23
+!  threads = dim3(256,1,1) !time  23
+!  threads = dim3(1024,1,1) !time 28
+
+! 200 time steps
+!  threads = dim3(512,1,1) !time 43.77
+!  threads = dim3(256,4,1) !time 48.5
+!  threads = dim3(256,4,2) !time bad
+  threads = dim3(256,2,2) !time 43.41
+!  threads = dim3(256,2,1) !time 43.69
+!  threads = dim3(256,1,1) !time  43.78
+!  threads = dim3(1024,1,1) !time 52
+
+  blocks = dim3(ceiling(real(N)/threads%x), ceiling(real(N)/threads%y), ceiling(real(N)/threads%z))
+
+  ! initialize to zero
+  w=zero; wt=zero; k11=zero; k12=zero; k21=zero; k22=zero; k31=zero; k32=zero; k41=zero; k42=zero
+
+  ! bind the texture
+  w_tex => w;  wt_tex => wt;  gradw_tex=>gradw; k11_tex=>k11; k12_tex=>k12; k21_tex=>k21; 
+  k22_tex=>k22; k31_tex=>k31; k32_tex=>k32; k41_tex=>k41; k42_tex=>k42
+  write(*,"(A,5f5.3)") 'Steady state solution is u = +/- ', sqrt(mu_2/lambda)
+
+  do m=1,N_spikes
+     call initial_data1<<<blocks, threads>>>(amps(m),cx(m),cy(m),cz(m),radius2s(m))  
+     write(*,*)  "rad^2=",radius2s(m), " dx=",dx, " 2=",two
+     write(*,*) "cx=", cx(m), " cy=", cy(m), " cz=",cz(m)
+     write(*,*) " amp=",amps(m), " one=",one, " 1/rad^2=", one/radius2s(m)
+     write(*,*) " exp(1/rad^2)=", exp(one/radius2s(m))
+  end do
+  call initial_data2<<<blocks, threads>>>() 
+  istat = cudaDeviceSynchronize()
+
+!  write(*,*) maxval(w), minval(w) 
+!  write(*,*) maxval(wt), minval(wt) 
+
+  call save_solution(0) !,w)
+
+  if(E_freq <= Nt_max) then  ! calculate initial energy
+     call calc_norm<<<blocks, threads>>>() !gradw) !,w)
+!     En(1)=sasum(N*N*N, dgradw, 1)*dx/144.0  ! gradient norm squared 
+     En(1)=maxval(gradw)/(dx*dx)  ! max abs laplacian
+  end if
+
+  write(*,*) "Starting",Nt_max,"time steps"
+  do step=1,Nt_max
+     if (prog_check>0)  call progress_percentage(step,perc_done)
+     t=step*dt
+     ! k1 = f(t,y(t))
+     rt=exp(-two*step*dt)/(L*L*dx*dx); c1 = mu_2-fifteenhalf*rt; c2 = -rt*onetwelve; c3=rt*fourthird 
+     dtp2=zero
+     call rungekutta1<<<blocks,threads>>>(t, rt,c1,c2,c3,dtp2)
+     ! k2 = f(t+h/2,y(t)+k1*h/2)
+     rt=exp(-two*step*dt-dt)/(L*L*dx*dx); c1=mu_2-fifteenhalf*rt; c2=-rt*onetwelve; c3=rt*fourthird
+     dtp2=dt/two
+     call rungekutta2<<<blocks,threads>>>(t,rt,c1,c2,c3,dtp2)
+    ! k3 = f(t+h/2,y(t)+k2*h/2)
+     call rungekutta3<<<blocks,threads>>>(t,rt,c1,c2,c3,dtp2)
+     ! k4 = f(t+h,y(t)+k3*h)
+     rt=exp(-two*(step*dt+dt))/(L*L*dx*dx); c1=mu_2-fifteenhalf*rt; c2=-rt*onetwelve; c3=rt*fourthird
+     dtp2=dt;
+     call rungekutta4<<<blocks,threads>>>(t,rt,c1,c2,c3,dtp2)
+     !  y(t+h) = y(t)+(k1+2*k2+2*k3+k4)*h/6
+     call advance_rungekutta<<<blocks,threads>>>()
+
+     
+     if (  mod(step,Nt_freq) == 0 )  then 
+        call save_solution(step/Nt_freq) !,w)
+!        write(*,*) maxval(w), minval(w) 
+!        write(*,*) maxval(wt), minval(wt) 
+     end if
+     if (  mod(step,E_freq) == 0 ) then      ! calculate energy
+        te=1+step/E_freq
+        call calc_norm<<<blocks, threads>>>() !gradw) !, w)
+!!!!        dEn(te)=sasum(N*N*N, dgradw, 1)*dx/144.0 !gradient norm squared
+        En(te)=maxval(gradw)/(dx*dx)  ! max abs laplacian
+     end if
+  end do
+
+  if(E_freq <= Nt_max)  call save_norm(En)
+
+  ! unbind the texture
+  nullify(w_tex, wt_tex, gradw_tex, k11_tex,k12_tex,k21_tex,k22_tex,k31_tex,k32_tex,k41_tex,k42_tex)
+
+end program higgsboson
