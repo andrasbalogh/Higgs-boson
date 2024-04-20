@@ -1,4 +1,4 @@
-!pgf90 -fast -o higgsboson higgsboson.cuf
+!nvfortran -fast -o two_bubbles two_bubbles.cuf
 module hbroutines
   integer, parameter :: N=501, Nt_max=3000, Nt_freq=10, E_freq=500000, prog_check=0, N_spikes=2
   real, parameter :: L=3.0, dt=0.001, mu_2=0.1, lambda=0.1, cdwdt=-5.0, dx=1.0d0/real(N-1), &
