@@ -7,6 +7,7 @@ The computations were done on Centos and Ubuntu workstations using CUDA v. 11.4 
 ## Related publication:
 ["High-performance implementation of a Runge–Kutta finite-difference scheme for the Higgs boson equation in the de Sitter spacetime](https://andrasbalogh.github.io/assets/pubs/higgs-boson-desitter.pdf), <i> Communications in Nonlinear Science and Numerical Simulation,</i> Volume 68, March 2019, Pages 15-30, with J. Banda and K. Yagdjian.
 
+* The initial conditions and other parameters can be changed inside the code. The two different CUDA Fortran codes and the Python code have the same solution methods otherwise.
 * one_bubble.cuf - CUDA Fortran source file.
   * Under Ubuntu OS with NVIDIA HPC SDK installed compile from command prompt with command: nvfortran -fast -o one_bubble one_bubble.cuf
   * Execute: ./one_bubble
