@@ -14,9 +14,14 @@ The computations were done on Centos and Ubuntu workstations using CUDA v. 11.4 
   *  one_bubble.pvsm - ParaView "state" file. Use it with paraview to read the vtk files and to create visualization of the bubble formation.
   * one_bubble.mp4, one_bubble.ogv - animation in different formats
  
-  * two_bubbles.cuf - CUDA Fortran source file.
+* two_bubbles.cuf - CUDA Fortran source file.
   * Under Ubuntu OS with NVIDIA HPC SDK installed compile from command prompt with command: nvfortran -fast -o two_bubble two_bubble.cuf
   * Execute: ./two_bubble
   * It will create 301 binary data files with the results out000.vtk - out300.vtk
   *  two_bubbles.pvsm - ParaView "state" file. Use it with paraview to read the vtk files and to create visualization of the bubble formation.
   * two_bubbles.mp4, two_bubbles.flv, two_bubbles.ogv - animation in various formats
+
+* higgsboson.ipynb - jupyter notebook file that can be run on Google Colaboratory. It can calculate a Lyapunov function-like quantity and its derivative to show the boundedness of solutions. It can also save binary vti data files for visualization using Paraview.
+
+  
+  
